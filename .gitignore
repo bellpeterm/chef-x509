@@ -12,9 +12,9 @@ pkg/
 Berksfile.lock
 
 # Bundler
-Gemfile.lock
+*Gemfile.lock
 bin/*
 .bundle/*
 
 .kitchen/
-.kitchen.local.yml
+.kitchen.local.*
