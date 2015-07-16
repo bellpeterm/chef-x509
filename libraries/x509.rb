@@ -12,27 +12,24 @@ def x509_load_key(path)
   return EaSSL::Key.load(path)
 end
 
+def x509_load_cert(path)
+  return EaSSL::Certificate.load(path)
+end
+
 def x509_generate_csr(info)
   ea_name = EaSSL::CertificateName.new(info[:name])
   ea_csr  = EaSSL::SigningRequest.new(info.merge({:name => ea_name}))
   ea_csr
 end
 
-def x509_issue_self_signed_cert(csr, type, name)
-  # generate some randomness so that temporary CAs are unique, since
-  # all the serial numbers are the same. some browsers will reject all
-  # but the first with the same common name and serial, even if the
-  # certificate is different.
-  rand = urlsafe_encode64(OpenSSL::Random.pseudo_bytes(12))
-  name[:common_name] = "Temporary CA #{rand}"
-  ca = EaSSL::CertificateAuthority.new(:name => name)
+def x509_issue_self_signed_cert(csr, key, type)
+  # Self-signed certificate where subject == issuer with own key
   cert = EaSSL::Certificate.new(
     :type => type,
-    :signing_request => csr,
-    :ca_certificate => ca.certificate
+    :signing_request => csr
   )
-  cert.sign(ca.key)
-  return cert, ca
+  cert.sign(key)
+  return cert
 end
 
 def x509_verify_key_cert_match(key_text, cert_text)
