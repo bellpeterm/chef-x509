@@ -27,61 +27,68 @@ action :create do
 
   # Load the current key, if it doesn't exist or the node is set to regenerate one
   key = load_key(node['x509']['regenerate_key'])
+  certbag = get_signed_cert
+  databag_cert = certbag ? EaSSL::Certificate.new({}).load(certbag[:certificate]) : false
+  existing_cert = load_cert
   # If a cert can be obtained from the data_bag
-  if certbag = get_signed_cert
-    Chef::Log.debug('Found a cert in the data_bag')
-    # Check if the key matches the certificate
-    if x509_verify_key_cert_match(key, certbag[:certificate])
-      Chef::Log.debug('Key matches the cert')
-      # Check if it's expiring; generate a csr if so, clear the csr if not
-      if expiring?(certbag.certificate, default['x509']['expiry_threshold'])
-        Chef::Log.debug('Certificate is expiring, creating a new CSR')
-        generate_csr(key)
-      else
-        Chef::Log.debug('Certificate is OK, clearing csr_outbox')
-        clear_csr
-      end
-      # Install the certificate
-      Chef::Log.debug('Install certificate')
-      install_certificate(certbag)
+  if databag_cert && x509_verify_key_cert_match(key, databag_cert)
+    Chef::Log.debug('Found a matching cert in the data_bag')
+    # Check if it's expiring; generate a csr if so, clear the csr if not
+    if expiring?(databag_cert, node['x509']['expiry_threshold'])
+      Chef::Log.debug('Certificate is expiring, creating a new CSR')
+      generate_csr(key)
+    else
+      Chef::Log.debug('Certificate is OK, clearing csr_outbox')
+      clear_csr
     end
+    # Install the certificate
+    Chef::Log.debug('Install certificate')
+    install_certificate(certbag)
   # If a cert cannot be obtained from the data_bag, Check if there is a certificate installed
-  elsif existing_cert = load_cert
-    Chef::Log.debug('Found a cert on the filesystem')
-    # Check if the installed certificate matches our key
-    if x509_verify_key_cert_match(key.to_pem, existing_cert.to_pem)
-      Chef::Log.debug('Key matches the cert')
-      # Check if the certificate is self-signed
-      if existing_cert.ssl.issuer == existing_cert.ssl.subject
-        Chef::Log.debug('Certificate is self-signed, ensuring a request is in csr_outbox')
-        csr = generate_csr(key)
-        # Check if the certificate is expired
-        if expiring?(existing_cert, default['x509']['ss_expiry_threshold'])
-          Chef::Log.debug('Certificate is expiring, creating a new self-signed cert')
-          generate_ss_cert(csr, key)
-        end
-      else
-        Chef::Log.debug('Certificate is not self-signed')
-        if revoked?(existing_cert) && node['x509']['overwrite_revoked']
-          Chef::Log.debug('Certificate is revoked and configured to overwrite')
-          Chef::Log.debug('Generating new key/csr/self-signed cert')
-          key = load_key(true)
-          csr = generate_csr(key)
-          generate_ss_cert(csr, key)
-        end
-        Chef::Log.debug('Certificate is valid but not in Chef')
-        # Leave it alone, a signed cert exists but is not revoked now in the data_bag
-        # It was deleted from the data_bag, created manually, or signed by an unrecognized CA
+  elsif existing_cert && x509_verify_key_cert_match(key, existing_cert)
+    Chef::Log.debug('Found a matching cert on the filesystem')
+    # Check if the certificate is self-signed
+    if existing_cert.ssl.issuer == existing_cert.ssl.subject
+      Chef::Log.debug('Certificate is self-signed, ensuring a request is in csr_outbox')
+      csr = generate_csr(key)
+      # Check if the certificate is expired
+      if expiring?(existing_cert, node['x509']['ss_expiry_threshold'])
+        Chef::Log.debug('Certificate is expiring, creating a new self-signed cert')
+        generate_ss_cert(csr, key)
+      end
+      
+      if new_resource.provisionwait
+        Chef::Log.debug("Waiting up to #{node['x509']['provision_wait_timeout']} seconds for certificate provisioning")
+        certbag = wait_for_signed_cert(key)
+        install_certificate(certbag) if certbag
       end
     else
-      Chef::Log.debug('Key does not match the cert, generating csr and self-signed cert')
-      csr = generate_csr(key)
-      generate_ss_cert(csr, key)
+      Chef::Log.debug('Certificate is not self-signed')
+      if revoked?(existing_cert) && node['x509']['overwrite_revoked']
+        Chef::Log.debug('Certificate is revoked and configured to overwrite')
+        Chef::Log.debug('Generating new key/csr/self-signed cert')
+        key = load_key(true)
+        csr = generate_csr(key)
+        generate_ss_cert(csr, key)
+        if new_resource.provisionwait
+          Chef::Log.debug("Waiting up to #{node['x509']['provision_wait_timeout']} seconds for certificate provisioning")
+          certbag = wait_for_signed_cert(key)
+          install_certificate(certbag) if certbag
+        end
+      end
+      Chef::Log.debug('Certificate is valid but not in Chef')
+      # Leave it alone, a signed cert exists but is not revoked now in the data_bag
+      # It was deleted from the data_bag, created manually, or signed by an unrecognized CA
     end
   else
-    Chef::Log.debug('No cert found, generating csr and self-signed cert')
+    Chef::Log.debug('No matching cert found, generating csr and self-signed cert')
     csr = generate_csr(key)
     generate_ss_cert(csr, key)
+    if new_resource.provisionwait
+      Chef::Log.debug("Waiting up to #{node['x509']['provision_wait_timeout']} seconds for certificate provisioning")
+      certbag = wait_for_signed_cert(key)
+      install_certificate(certbag) if certbag
+    end
   end
 end
 
@@ -97,16 +104,16 @@ end
 def install_certificate(certbag)
   Chef::Log.info("installing certificate #{new_resource.name} (id #{cert_id})")
   f = resource("file[#{new_resource.certificate}]")
-  if new_resource.joincachain && certbag['cacert']
-    f.content certbag[:certificate] + certbag['cacert']
+  if new_resource.joincachain && certbag[:cacert]
+    f.content certbag[:certificate] + certbag[:cacert]
   else
     f.content certbag[:certificate]
   end
   f.action :create
   
-  if new_resource.cacertificate && certbag['cacert']
+  if new_resource.cacertificate && certbag[:cacert]
     f = resource("file[#{new_resource.cacertificate}]")
-    f.content certbag['cacert']
+    f.content certbag[:cacert]
     f.action :create
   end
 end
@@ -132,19 +139,21 @@ def load_cert
   return ::File.size?(new_resource.certificate) ? x509_load_cert(new_resource.certificate) : false
 end
 
-def get_signed_cert(provision_wait=false)
-  # Try to find this certificate in the data bag.
-  certbag = nil
+def wait_for_signed_cert(key=nil)
+  cert = nil
   timeout = Time.now + node['x509']['provision_wait_timeout']
-  if provision_wait then
-    until certbag
-      certbag = search(:certificates, "id:#{cert_id}")
-      sleep node['x509']['provision_wait_interval']
-      break if Time.now < timeout
-    end
-  else
-    certbag = search(:certificates, "id:#{cert_id}")
+  until x509_verify_key_cert_match(key, cert)
+    cert = get_signed_cert
+    break cert if cert
+    return false if Time.now > timeout
+    sleep node['x509']['provision_wait_interval']
   end
+  cert
+end
+
+def get_signed_cert
+  # Try to find this certificate in the data bag.
+  certbag = search(:certificates, "id:#{cert_id}")
   certbag.sort_by! { |c| OpenSSL::X509::Certificate.new(c[:certificate]).not_after }
   return certbag.count > 0 ? certbag.last : false
 end
@@ -163,7 +172,7 @@ def revoked?(certificate)
 end
 
 def expiring?(certificate, threshold=14)
-  return certificate.ssl.not_after > Time.now - 24 * 60 * 60 * threshold
+  return certificate.ssl.not_after < Time.now + 24 * 60 * 60 * threshold
 end
 
 def generate_csr(key)

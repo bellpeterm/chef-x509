@@ -32,9 +32,8 @@ def x509_issue_self_signed_cert(csr, key, type)
   return cert
 end
 
-def x509_verify_key_cert_match(key_text, cert_text)
-  key = OpenSSL::PKey::RSA.new(key_text)
-  cert = OpenSSL::X509::Certificate.new(cert_text)
+def x509_verify_key_cert_match(key, cert)
+  return false if key.class != EaSSL::Key or cert.class != EaSSL::Certificate
   key.n == cert.public_key.n
 end
 
