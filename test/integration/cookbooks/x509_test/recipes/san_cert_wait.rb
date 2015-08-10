@@ -7,5 +7,6 @@ x509_certificate 'service-www.example.com' do
   ca 'cshtc'
   bits 4096
   days 732
+  provisionwait true unless Chef::Config[:solo]
   subject_alt_name [ 'www.example.com', 'example.com', 'localhost' ]
 end

@@ -1,4 +1,5 @@
 require 'digest/sha2'
+require 'time'
 
 use_inline_resources
 
@@ -56,7 +57,7 @@ action :create do
         Chef::Log.debug('Certificate is expiring, creating a new self-signed cert')
         generate_ss_cert(csr, key)
       end
-      
+
       if new_resource.provisionwait
         Chef::Log.debug("Waiting up to #{node['x509']['provision_wait_timeout']} seconds for certificate provisioning")
         certbag = wait_for_signed_cert(key)
@@ -87,13 +88,9 @@ action :create do
     if new_resource.provisionwait
       Chef::Log.debug("Waiting up to #{node['x509']['provision_wait_timeout']} seconds for certificate provisioning")
       certbag = wait_for_signed_cert(key)
-      install_certificate(certbag) if certbag
+      install_certificate(certbag) and clear_csr if certbag
     end
   end
-end
-
-def resource(name)
-  return run_context.resource_collection.find(name)
 end
 
 def cert_id
@@ -110,7 +107,7 @@ def install_certificate(certbag)
     f.content certbag[:certificate]
   end
   f.action :create
-  
+
   if new_resource.cacertificate && certbag[:cacert]
     f = resource("file[#{new_resource.cacertificate}]")
     f.content certbag[:cacert]
@@ -142,9 +139,9 @@ end
 def wait_for_signed_cert(key=nil)
   cert = nil
   timeout = Time.now + node['x509']['provision_wait_timeout']
-  until x509_verify_key_cert_match(key, cert)
+  loop do
     cert = get_signed_cert
-    break cert if cert
+    break cert if cert and x509_verify_key_cert_match(key, EaSSL::Certificate.new({}).load(cert[:certificate]))
     return false if Time.now > timeout
     sleep node['x509']['provision_wait_interval']
   end
@@ -177,7 +174,13 @@ end
 
 def generate_csr(key)
   # Generate the new CSR using provided key
-  csr = x509_generate_csr({
+  if node['csr_outbox'] and node['csr_outbox'][new_resource.name]
+    csr = EaSSL::SigningRequest.new({}).load(node['csr_outbox'][new_resource.name][:csr])
+    if csr.public_key.to_pem == key.public_key.to_pem and csr_fresh?
+      return csr
+    end
+  end
+  newcsr = x509_generate_csr({
     :key => key,
     :name => {
       :common_name => new_resource.cn || new_resource.name,
@@ -193,19 +196,26 @@ def generate_csr(key)
 
   node.set['csr_outbox'][new_resource.name] = {
     :id => cert_id,
-    :csr => csr.to_pem,
+    :csr => newcsr.to_pem,
     :key => node['x509']['key_vault'] ? gpg_encrypt(key.private_key.to_s, node['x509']['key_vault']) : nil,
     :ca => new_resource.ca,
     :date => Time.now.to_s,
     :type => new_resource.type,
     :days => new_resource.days
-  } unless node['csr_outbox'] && node['csr_outbox'][new_resource.name]
+  }
 
-  return csr
+  # Save node immediately so the CSR is published
+  node.save
+  Chef::Log.debug("Created new CSR")
+  return newcsr
 end
 
 def clear_csr
-  node.rm('csr_outbox', new_resource.name)
+  node.set['csr_outbox'][new_resource.name] = nil
+end
+
+def csr_fresh?
+  Time.parse(node['csr_outbox'][new_resource.name][:date]) > Time.now - 60 * 60 * 24 * node['x509']['csr_freshness_threshold']
 end
 
 def generate_ss_cert(csr, key)
@@ -215,4 +225,8 @@ def generate_ss_cert(csr, key)
     new_resource.type
   )
   install_certificate({ :certificate => cert.to_pem })
+end
+
+def resource(name)
+  return run_context.resource_collection.find(name)
 end

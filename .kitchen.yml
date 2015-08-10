@@ -14,3 +14,9 @@ suites:
     run_list:
       - recipe[x509_test::san_cert]
     attributes:
+  - name: java
+    run_list:
+      - recipe[java]
+      - recipe[x509_test::san_cert]
+      - recipe[x509_test::java_keystore]
+    attributes:

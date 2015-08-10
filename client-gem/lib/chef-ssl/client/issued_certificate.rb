@@ -50,6 +50,7 @@ module ChefSSL
           :key => @req.key,
           :type => @req.type,
           :date => Time.now.to_s,
+          :reqdate => @req.reqdate,
           :not_after => @cert.not_after,
           :not_before => @cert.not_before,
           :host => @req.host,
@@ -60,7 +61,7 @@ module ChefSSL
         end
 
         begin
-          ret = Spice.create_data_bag_item(DATABAG, data)
+          Spice.create_data_bag_item(DATABAG, data)
         rescue Spice::Error::Conflict
           raise CertSaveFailed.new("Conflict - certificate data bag exists for #{@req.subject}, id #{@req.id}")
         rescue Spice::Error::ClientError => e

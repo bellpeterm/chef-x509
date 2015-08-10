@@ -11,17 +11,23 @@ default['x509']['organization'] = 'Example Ltd'
 default['x509']['department'] = 'Certificate Automation'
 default['x509']['email'] = 'x509-auto@example.com'
 
-default['x509']['tls_root'] = case node['platform_family']
+case node['platform_family']
 when 'rhel'
-  '/etc/pki/tls'
+  default['x509']['tls_root'] = '/etc/pki/tls'
+  default['x509']['java_root'] = '/etc/pki/java'
 else
-  '/etc/ssl'
+  default['x509']['tls_root'] = '/etc/ssl'
+  default['x509']['java_root'] = '/etc/ssl'
 end
+
+
 
 # Ask for a new certificate if the current one will expire in __ days
 default['x509']['expiry_threshold'] = 14
 # Same but for self-signed certificates
 default['x509']['ss_expiry_threshold'] = 1
+# Number of days a CSR can remain unfulfilled before being re-created
+default['x509']['csr_freshness_threshold'] = 14
 
 # Have the Chef client wait for an issued certificate before continuing.
 # Useful if a valid client certificate is needed later in the run_list.
