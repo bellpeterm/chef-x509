@@ -18,8 +18,7 @@ action :create do
   updated_certs = updatable_ids.map do |id|
     cert_res = find_certificate_resource(id)
   end.select do |cert_res|
-    puts "Updatable Cert: " + cert_res.to_text + ' ' + cert_res.class.to_s + ' ' + cert_res.updated.to_s
-    cert_res.class == Chef::Resource::X509Certificate ? cert_res.updated : false
+    cert_res.declared_type == :x509_certificate ? cert_res.updated : false
   end
 
   puts "Updated Certs: " + updated_certs.to_s
